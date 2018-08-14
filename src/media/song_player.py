@@ -9,10 +9,11 @@ class YoutubeSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, info, volume=0.8):
         super().__init__(source, volume)
         self.uploader = info.get('uploader')
-        self.views = info.get('views')
-        self.likes = info.get('likes')
+        self.views = info.get('view_count')
+        self.likes = info.get('like_count')
         self.title = info.get('title')
         self.duration = info.get('duration')
+        self.thumbnail = info.get('thumbnail')
 
     @classmethod
     async def from_url(cls, url: str, *, loop: asyncio.AbstractEventLoop = None, opts: dict = None, **kwargs):
@@ -39,21 +40,24 @@ class YoutubeSource(discord.PCMVolumeTransformer):
         ytdl = youtube_dl.YoutubeDL(youtube_opts)
         info = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False))
         download_url = info.get('url')
-
         return cls(discord.FFmpegPCMAudio(download_url, **kwargs), info=info)
 
     def __str__(self):
         result = f"{self.title} by {self.uploader}"
-        if self.duration:
-            result += "[length: {0[0]}m {0[1]}s]".format(divmod(self.duration, 60))
+        result += (f" [{self.get_duration_string()}]" if self.duration else "")
         return result
+
+    def get_duration_string(self):
+        if self.duration:
+            return "Length: {0[0]}m {0[1]}s".format(divmod(self.duration, 60))
+        return ""
 
 
 class Music:
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.vc: discord.VoiceClient = None
-        self.current = None
+        self.current: YoutubeSource = None
         self.play_next: asyncio.Event = asyncio.Event()  # Acts kind of like a lock mechanism, but can wake multiple.
         self.songs: asyncio.Queue = asyncio.Queue()  # We have to queue the songs of course
         self.audio_player = self.bot.loop.create_task(self.audio_task())
@@ -64,6 +68,26 @@ class Music:
             print(error)
         self.bot.loop.call_soon_threadsafe(self.play_next.set)
 
+    def get_current_video_embed(self, ctx):
+        embed = discord.Embed(
+            title=self.current.title,
+            colour=discord.colour.Color.blue()
+        )
+
+        author = ctx.message.author
+
+        embed.set_author(name="Now Playing")
+        embed.set_image(url=self.current.thumbnail)
+        embed.set_thumbnail(url=author.avatar_url)
+
+        embed.add_field(name="Uploader", value=self.current.uploader)
+        embed.add_field(name="Requested by", value=author)
+        embed.add_field(name="Views", value=f"{self.current.views:,}")
+        embed.add_field(name="Likes", value=f"{self.current.likes:,}")
+        embed.set_footer(text=self.current.get_duration_string())
+
+        return embed
+
     async def audio_task(self):
         while True:
             if self.vc:
@@ -72,14 +96,15 @@ class Music:
                 self.current, ctx = await self.songs.get()
 
                 if ctx is not None:
-                    await ctx.send(f"Now Playing: {str(self.current)} requested by:{ctx.message.author}")
-
+                    await ctx.send(embed=self.get_current_video_embed(ctx))
+                self.skips.clear()
                 self.vc.play(self.current, after=self.toggle_lock)
                 await self.play_next.wait()
             else:
                 await asyncio.sleep(0)  # Needs some type of await
 
-    @commands.command(no_pm=True)
+    @commands.command()
+    @commands.guild_only()
     async def play(self, ctx, link: str):
         if not (link.startswith("https://www.youtube.com/watch?v=")):
             await ctx.send("Sorry, this is not a valid url")
@@ -99,13 +124,17 @@ class Music:
                                                   loop=self.bot.loop,
                                                   opts=None,
                                                   before_options=args)
-            await ctx.send("Enqueued {0} requested by:{1}".format(str(player), ctx.message.author))
+
+            await ctx.send("Enqueued {0} at position {1} of {1} requested by:{2}".format(str(player),
+                                                                                         self.songs.qsize(),
+                                                                                         ctx.message.author))
             await self.songs.put((player, ctx))
 
         else:
             await ctx.send("Sorry. You must be in a voice channel for this command")
 
-    @commands.command(no_pm=True)
+    @commands.command()
+    @commands.guild_only()
     async def stop(self, ctx):
         if self.vc is not None:
             await ctx.send("Clearing song queue, and leaving the voice channel")
@@ -116,7 +145,8 @@ class Music:
         else:
             await ctx.send("Sorry. I am not in a channel right now!")
 
-    @commands.command(no_pm=True)
+    @commands.command()
+    @commands.guild_only()
     async def skip(self, ctx):
         skip_size = 2
         if self.vc and self.vc.is_playing():
@@ -131,6 +161,5 @@ class Music:
             if len(self.skips) == skip_size:
                 await ctx.send("Now skipping song!")
                 self.vc.stop()
-                self.skips.clear()
         else:
             await ctx.send("I am not playing anything right now!")

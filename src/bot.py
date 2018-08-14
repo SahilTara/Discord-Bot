@@ -15,6 +15,7 @@ async def on_ready():
     print(bot.user.name)
     print(bot.user.id)
     print('------')
+    await bot.change_presence(activity=discord.Game(name="Intense Coding"))
 
 bot.add_cog(Music(bot))
 bot.run("")
