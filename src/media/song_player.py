@@ -17,7 +17,7 @@ class YoutubeSource(discord.PCMVolumeTransformer):
         self.thumbnail = info.get('thumbnail')
 
     @classmethod
-    async def from_url(cls, url: str, *, loop: asyncio.AbstractEventLoop = None, opts: dict = None, **kwargs):
+    async def from_url(cls, url: str, volume: float, *, loop: asyncio.AbstractEventLoop = None, opts: dict = None, **kwargs):
         """
         Creates an AudioSource for videos.
 
@@ -62,6 +62,7 @@ class Music:
         self.play_next: asyncio.Event = asyncio.Event()  # Acts kind of like a lock mechanism, but can wake multiple.
         self.songs: asyncio.Queue = asyncio.Queue()  # We have to queue the songs of course
         self.audio_player = self.bot.loop.create_task(self.audio_task())
+        self.volume = 0.8
         self.skips = set()
         self.embeds = dict()
 
@@ -136,6 +137,7 @@ class Music:
                 self.vc = await channel.connect()
             args = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
             player = await YoutubeSource.from_url(url=link,
+                                                  volume=self.volume,
                                                   loop=self.bot.loop,
                                                   opts=None,
                                                   before_options=args)
@@ -236,3 +238,14 @@ class Music:
             self.embeds[message.id] = result[1]
             await message.edit(embed=result[0])
 
+    @commands.command()
+    @commands.guild_only()
+    async def vol(self, ctx, volume: int = 80):
+        if volume < 0:
+            volume = 0
+        elif volume > 100:
+            volume = 100
+
+        self.volume = volume / 100
+        self.current.volume = self.volume
+        await ctx.send(f"Set volume to {volume}/100")
