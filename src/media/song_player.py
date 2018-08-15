@@ -3,6 +3,7 @@ from discord.ext import commands
 
 import asyncio
 import youtube_dl
+from math import ceil
 
 
 class YoutubeSource(discord.PCMVolumeTransformer):
@@ -62,6 +63,7 @@ class Music:
         self.songs: asyncio.Queue = asyncio.Queue()  # We have to queue the songs of course
         self.audio_player = self.bot.loop.create_task(self.audio_task())
         self.skips = set()
+        self.embeds = dict()
 
     def toggle_lock(self, error=None):
         if error is not None:
@@ -71,7 +73,7 @@ class Music:
     def get_current_video_embed(self, ctx):
         embed = discord.Embed(
             title=self.current.title,
-            colour=discord.colour.Color.blue()
+            colour=discord.colour.Colour.blue()
         )
 
         author = ctx.message.author
@@ -103,6 +105,19 @@ class Music:
             else:
                 await asyncio.sleep(0)  # Needs some type of await
 
+    def get_enqueue_embed(self, player: YoutubeSource, ctx):
+        embed = discord.Embed(
+            title=player.title,
+            color=discord.colour.Colour.green()
+        )
+
+        embed.set_author(name="Enqueued")
+        embed.add_field(name="Requested by", value=ctx.message.author)
+        embed.add_field(name="Position", value=f"{self.songs.qsize()}/{self.songs.qsize()}")
+        embed.set_footer(text=player.get_duration_string())
+
+        return embed
+
     @commands.command()
     @commands.guild_only()
     async def play(self, ctx, link: str):
@@ -125,11 +140,8 @@ class Music:
                                                   opts=None,
                                                   before_options=args)
 
-            await ctx.send("Enqueued {0} at position {1} of {1} requested by:{2}".format(str(player),
-                                                                                         self.songs.qsize(),
-                                                                                         ctx.message.author))
             await self.songs.put((player, ctx))
-
+            await ctx.send(embed=self.get_enqueue_embed(player, ctx))
         else:
             await ctx.send("Sorry. You must be in a voice channel for this command")
 
@@ -138,9 +150,9 @@ class Music:
     async def stop(self, ctx):
         if self.vc is not None:
             await ctx.send("Clearing song queue, and leaving the voice channel")
-
             self.songs = asyncio.Queue()
             await self.vc.disconnect()
+            self.embeds.clear()
             self.vc = None
         else:
             await ctx.send("Sorry. I am not in a channel right now!")
@@ -163,3 +175,64 @@ class Music:
                 self.vc.stop()
         else:
             await ctx.send("I am not playing anything right now!")
+
+    def get_queue_embed_and_page(self, page: int=1):
+        embed = discord.Embed(
+            title="List of songs",
+            color=discord.colour.Colour.dark_gold(),
+            description=""
+        )
+
+        items_per_page = 5
+        pages = ceil(self.songs.qsize() / items_per_page)
+
+        if 0 < pages < page:
+            page = 1
+        elif pages == 0:
+            page = 0
+        elif page <= 0:
+            page = pages
+
+        start = (page-1) * items_per_page
+        end = start + items_per_page
+
+        for index, ele in enumerate(list(self.songs._queue)[start:end], start=start):
+            player: YoutubeSource = ele[0]
+            embed.description += f"{index+1}. ***{player.title}*** [{player.get_duration_string()}]\n"
+
+        embed.set_footer(text=f"Viewing page {page}/{pages}")
+        return embed, page
+
+    @commands.command()
+    @commands.guild_only()
+    async def queue(self, ctx):
+        result = self.get_queue_embed_and_page()  # (embed,page)
+        msg: discord.Message = await ctx.send(embed=result[0])
+        await msg.add_reaction("⬅")
+        await msg.add_reaction("➡")
+
+        self.embeds[msg.id] = 1
+
+    async def on_reaction_add(self, reaction: discord.Reaction, user):
+        message: discord.Message = reaction.message
+
+        # If it is the bot reacting, we are in a bugged state and we shouldn't process anything
+        # This fixes a bug where the reaction prompt disappears if the user clicks too fast
+        # (since the listener somehow gets applied).
+        if user.id == self.bot.user.id:
+            return
+
+        if message.id in self.embeds.keys():
+            page_num = self.embeds[message.id]
+
+            await message.remove_reaction(reaction.emoji, user)
+
+            if reaction.emoji == "⬅":
+                page_num -= 1
+            elif reaction.emoji == "➡":
+                page_num += 1
+
+            result = self.get_queue_embed_and_page(page_num)
+            self.embeds[message.id] = result[1]
+            await message.edit(embed=result[0])
+
